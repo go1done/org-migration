@@ -1,0 +1,6 @@
+# org-governance/.gitignore
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
