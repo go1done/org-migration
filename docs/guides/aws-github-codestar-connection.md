@@ -243,11 +243,210 @@ aws codeconnections get-connection \
 
 Both should show `ConnectionStatus: Available`.
 
-Then run a Terraform validate on the org-governance config:
+---
+
+## Persisting in Terraform (Import After Manual Creation)
+
+After creating connections manually and completing the GitHub handshake, import them into Terraform so they're managed as code.
+
+### Step 1: Get your connection ARNs
+
+```bash
+aws codeconnections list-connections --region us-east-1 \
+  --query 'Connections[].{Name:ConnectionName,ARN:ConnectionArn,Status:ConnectionStatus}' \
+  --output table
+```
+
+Note the ARN for each connection.
+
+### Step 2: Update tfvars with your actual values
+
+Edit `org-governance/aws/codestar-connections.auto.tfvars`:
+
+```hcl
+github_connections = {
+  "old-org-name" = {
+    name = "github-old-org"    # must match the name you used in Console
+    tags = {
+      Purpose   = "Source code access for repos staying in old org"
+      ManagedBy = "terraform"
+    }
+  }
+  "new-org-name" = {
+    name = "github-new-org"    # must match the name you used in Console
+    tags = {
+      Purpose   = "Source code access for repos migrated to new org"
+      ManagedBy = "terraform"
+    }
+  }
+}
+```
+
+### Step 3: Initialize Terraform
 
 ```bash
 cd org-governance/aws
+terraform init
+```
+
+### Step 4: Import each connection into state
+
+```bash
+# Import the old org connection
+terraform import \
+  'aws_codestarconnections_connection.github["old-org-name"]' \
+  arn:aws:codeconnections:us-east-1:123456789012:connection/aaa-111
+
+# Import the new org connection
+terraform import \
+  'aws_codestarconnections_connection.github["new-org-name"]' \
+  arn:aws:codeconnections:us-east-1:123456789012:connection/bbb-222
+```
+
+Expected output for each:
+```
+aws_codestarconnections_connection.github["old-org-name"]: Importing...
+aws_codestarconnections_connection.github["old-org-name"]: Import complete!
+```
+
+### Step 5: Verify with terraform plan
+
+```bash
 terraform plan
 ```
 
-The `aws_codestarconnections_connection` data sources should resolve without errors.
+Expected: **No changes.** If Terraform shows changes, it's likely a name or tag mismatch — update your tfvars to match the existing connection exactly.
+
+```
+No changes. Your infrastructure matches the configuration.
+```
+
+### Step 6: Apply tags (if plan shows tag additions only)
+
+If the only changes are adding tags (the manually created connection didn't have tags), that's safe:
+
+```bash
+terraform apply
+```
+
+### Step 7: Verify outputs
+
+```bash
+terraform output connection_arns
+# {
+#   "old-org-name" = "arn:aws:codeconnections:us-east-1:123456789012:connection/aaa-111"
+#   "new-org-name" = "arn:aws:codeconnections:us-east-1:123456789012:connection/bbb-222"
+# }
+
+terraform output connection_statuses
+# {
+#   "old-org-name" = "AVAILABLE"
+#   "new-org-name" = "AVAILABLE"
+# }
+```
+
+### What Terraform manages after import
+
+| Attribute | Managed | Notes |
+|-----------|---------|-------|
+| Connection name | Yes | Renaming is safe |
+| Tags | Yes | Add/update/remove |
+| Deletion | Protected | `prevent_destroy = true` in the resource |
+| GitHub OAuth handshake | No | AWS-side only, not in Terraform state |
+| Provider type | Yes | Immutable after creation |
+
+### Alternative: Terraform 1.5+ import blocks (no CLI needed)
+
+If you're on Terraform >= 1.5, you can use `import` blocks instead of the CLI command. Add this to a temporary file:
+
+```hcl
+# org-governance/aws/imports.tf (delete after successful import)
+import {
+  to = aws_codestarconnections_connection.github["old-org-name"]
+  id = "arn:aws:codeconnections:us-east-1:123456789012:connection/aaa-111"
+}
+
+import {
+  to = aws_codestarconnections_connection.github["new-org-name"]
+  id = "arn:aws:codeconnections:us-east-1:123456789012:connection/bbb-222"
+}
+```
+
+Then run:
+
+```bash
+terraform plan    # shows import + any changes
+terraform apply   # performs the import
+```
+
+After apply succeeds, delete `imports.tf` — the resources are now in state.
+
+---
+
+## Using Connections in Pipeline Repos
+
+After import, pipeline repos consume the connection ARNs via the `pipeline-source` module:
+
+```hcl
+# In your pipeline repo's Terraform
+data "terraform_remote_state" "governance" {
+  backend = "s3"
+  config = {
+    bucket = "your-terraform-state-bucket"
+    key    = "org-governance/aws/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+# Source from a repo in the new org
+module "source_app" {
+  source = "git::https://github.com/new-org/org-governance.git//aws/modules/pipeline-source"
+
+  repository_name = "my-app"
+  github_org      = "new-org"
+  connection_arns = data.terraform_remote_state.governance.outputs.connection_arns
+}
+
+# Source from a repo that stays in the old org
+module "source_shared_modules" {
+  source = "git::https://github.com/new-org/org-governance.git//aws/modules/pipeline-source"
+
+  repository_name = "shared-terraform-modules"
+  github_org      = "old-org"
+  connection_arns = data.terraform_remote_state.governance.outputs.connection_arns
+}
+
+# Use in CodePipeline
+resource "aws_codepipeline" "pipeline" {
+  name     = "my-pipeline"
+  role_arn = aws_iam_role.pipeline.arn
+
+  stage {
+    name = "Source"
+
+    action {
+      name             = "AppSource"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
+      version          = "1"
+      output_artifacts = ["app_source"]
+      configuration    = module.source_app.source_action_config
+    }
+
+    action {
+      name             = "SharedModulesSource"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
+      version          = "1"
+      output_artifacts = ["shared_source"]
+      configuration    = module.source_shared_modules.source_action_config
+    }
+  }
+
+  # ... build, deploy stages
+}
+```
+
+The `github_org` parameter determines which connection ARN is used — no hardcoded ARNs anywhere in pipeline repos.
