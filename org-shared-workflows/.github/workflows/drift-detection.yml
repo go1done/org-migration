@@ -1,0 +1,61 @@
+# org-shared-workflows/.github/workflows/drift-detection.yml
+name: Drift Detection
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Directory containing Terraform files"
+        required: true
+        type: string
+      schedule_cron:
+        description: "Cron schedule for drift detection"
+        required: false
+        type: string
+        default: "0 6 * * 1-5"
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+jobs:
+  detect-drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-arn: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan (detect drift)
+        id: plan
+        run: |
+          terraform plan -detailed-exitcode -no-color 2>&1 | tee plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Alert on drift
+        if: steps.plan.outputs.exit_code == '2'
+        run: |
+          echo "::warning::Drift detected in ${{ inputs.working_directory }}"
+          if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+              -H 'Content-type: application/json' \
+              -d "{\"text\": \"Drift detected in \`${{ inputs.working_directory }}\` — review required.\"}"
+          fi

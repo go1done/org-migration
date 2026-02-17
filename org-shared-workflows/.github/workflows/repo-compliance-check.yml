@@ -1,0 +1,53 @@
+# org-shared-workflows/.github/workflows/repo-compliance-check.yml
+name: Repository Compliance Check
+
+on:
+  workflow_call:
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CODEOWNERS exists
+        run: |
+          if [ ! -f "CODEOWNERS" ] && [ ! -f ".github/CODEOWNERS" ] && [ ! -f "docs/CODEOWNERS" ]; then
+            echo "::error::CODEOWNERS file is missing"
+            exit 1
+          fi
+
+      - name: Validate CODEOWNERS syntax
+        run: |
+          CODEOWNERS_FILE=""
+          for f in CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS; do
+            [ -f "$f" ] && CODEOWNERS_FILE="$f" && break
+          done
+          # Check each line has a valid pattern and at least one owner
+          grep -v '^#' "$CODEOWNERS_FILE" | grep -v '^$' | while read -r line; do
+            owners=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+            if [ -z "$owners" ]; then
+              echo "::error::CODEOWNERS line missing owners: $line"
+              exit 1
+            fi
+          done
+
+      - name: Secret scan with gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for .gitignore
+        run: |
+          if [ ! -f ".gitignore" ]; then
+            echo "::warning::.gitignore file is missing"
+          fi
+
+      - name: Terraform format check (if HCL files exist)
+        run: |
+          if compgen -G "**/*.tf" > /dev/null 2>&1; then
+            terraform fmt -check -recursive
+          fi
