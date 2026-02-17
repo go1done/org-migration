@@ -1,0 +1,71 @@
+# org-governance/.github/workflows/compliance-report.yml
+name: Org Compliance Report
+
+on:
+  schedule:
+    - cron: "0 8 * * 1-5"  # Weekdays at 8am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate compliance report
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ORG_NAME: ${{ vars.ORG_NAME }}
+        run: |
+          echo "# Org Compliance Report - $(date -u +%Y-%m-%d)" > report.md
+          echo "" >> report.md
+          echo "| Repo | Secret Scanning | Push Protection | Rulesets | CODEOWNERS |" >> report.md
+          echo "|------|----------------|-----------------|----------|------------|" >> report.md
+
+          NONCOMPLIANT=0
+
+          gh repo list "$ORG_NAME" --limit 200 --json name --jq '.[].name' | while read -r repo; do
+            FULL="${ORG_NAME}/${repo}"
+
+            SS=$(gh api "repos/${FULL}" --jq '.security_and_analysis.secret_scanning.status // "unknown"' 2>/dev/null || echo "unknown")
+            PP=$(gh api "repos/${FULL}" --jq '.security_and_analysis.secret_scanning_push_protection.status // "unknown"' 2>/dev/null || echo "unknown")
+            RS=$(gh api "repos/${FULL}/rulesets" --jq 'length' 2>/dev/null || echo "0")
+            CO="no"
+            gh api "repos/${FULL}/contents/CODEOWNERS" > /dev/null 2>&1 && CO="yes"
+            gh api "repos/${FULL}/contents/.github/CODEOWNERS" > /dev/null 2>&1 && CO="yes"
+
+            SS_ICON=$([ "$SS" = "enabled" ] && echo "pass" || echo "FAIL")
+            PP_ICON=$([ "$PP" = "enabled" ] && echo "pass" || echo "FAIL")
+            RS_ICON=$([ "$RS" -gt 0 ] && echo "pass ($RS)" || echo "FAIL")
+            CO_ICON=$([ "$CO" = "yes" ] && echo "pass" || echo "FAIL")
+
+            echo "| ${repo} | ${SS_ICON} | ${PP_ICON} | ${RS_ICON} | ${CO_ICON} |" >> report.md
+
+            if [ "$SS_ICON" = "FAIL" ] || [ "$PP_ICON" = "FAIL" ] || [ "$RS_ICON" = "FAIL" ] || [ "$CO_ICON" = "FAIL" ]; then
+              NONCOMPLIANT=$((NONCOMPLIANT + 1))
+            fi
+          done
+
+          echo "" >> report.md
+          echo "**Non-compliant repos: ${NONCOMPLIANT}**" >> report.md
+
+      - name: Create issue if non-compliant
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if grep -q "FAIL" report.md; then
+            gh issue create \
+              --title "Compliance Report: $(date -u +%Y-%m-%d) - Issues Found" \
+              --body "$(cat report.md)" \
+              --label "compliance"
+          fi
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report
+          path: report.md
