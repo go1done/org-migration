@@ -1,0 +1,5 @@
+# org-policies/conftest.toml
+[policy]
+  paths = ["policies/"]
+[test]
+  paths = ["tests/"]
