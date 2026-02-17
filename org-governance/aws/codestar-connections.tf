@@ -1,10 +1,11 @@
 # org-governance/aws/codestar-connections.tf
 #
-# Maps existing CodeStar Connections to GitHub orgs so pipelines can
-# automatically resolve the correct connection ARN by org name.
+# DUAL-ORG MODEL: Both GitHub orgs coexist permanently. Some repos live in
+# the old org, some in the new org. Repos in the new org may source modules
+# from repos that remain in the old org. Both CodeStar Connections stay active.
 
 variable "codestar_connections" {
-  description = "Map of GitHub org name to CodeStar Connection ARN"
+  description = "Map of GitHub org name to CodeStar Connection ARN (both orgs)"
   type        = map(string)
   # Example:
   # {
@@ -13,29 +14,22 @@ variable "codestar_connections" {
   # }
 }
 
-variable "active_github_org" {
-  description = "The GitHub org that pipelines should use (set to new org after migration)"
-  type        = string
-}
-
-# Look up existing connections by ARN (data source validates they exist)
+# Look up existing connections by ARN (validates they exist and are available)
 data "aws_codestarconnections_connection" "github" {
   for_each = var.codestar_connections
   arn      = each.value
 }
 
-# Outputs for pipeline repos to consume
-output "active_connection_arn" {
-  description = "CodeStar Connection ARN for the active GitHub org"
-  value       = var.codestar_connections[var.active_github_org]
-}
-
+# Outputs for pipeline repos to consume — both connections available
 output "connection_arns" {
   description = "All CodeStar Connection ARNs by org name"
   value       = var.codestar_connections
 }
 
-output "active_connection_status" {
-  description = "Status of the active connection (should be AVAILABLE)"
-  value       = data.aws_codestarconnections_connection.github[var.active_github_org].connection_status
+output "connection_statuses" {
+  description = "Status of each connection (should be AVAILABLE)"
+  value = {
+    for org, _ in var.codestar_connections :
+    org => data.aws_codestarconnections_connection.github[org].connection_status
+  }
 }
