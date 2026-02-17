@@ -3,4 +3,17 @@
 *.tfstate
 *.tfstate.backup
 *.tfplan
-.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files (local testing)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Environment variable files
+.env
+*.env
