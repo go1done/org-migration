@@ -2,12 +2,14 @@
 # migration-tooling/scripts/import-org-settings-curl.sh
 # Imports org settings from a dump directory into a target GitHub org.
 # Reverse of dump-org-settings-curl.sh — reads the dump and applies via API.
+# Uses curl + GitHub REST API — no gh CLI or jq required (uses python3 for JSON).
 #
 # Usage:
 #   export GITHUB_TOKEN="ghp_your_personal_access_token"
 #   ./import-org-settings-curl.sh <target-org> <dump-dir> [--dry-run]
 #
 # Required token scopes: admin:org, repo, read:org
+# Requires: curl, python3
 #
 # SAFETY:
 #   - Runs in --dry-run mode by default if flag is passed (shows what would change)
@@ -34,6 +36,11 @@ if [ ! -d "$DUMP_DIR" ]; then
   exit 1
 fi
 
+if ! command -v python3 &> /dev/null; then
+  echo "ERROR: python3 is required but not found."
+  exit 1
+fi
+
 API="https://api.github.com"
 AUTH_HEADER="Authorization: Bearer ${GITHUB_TOKEN}"
 ACCEPT="Accept: application/vnd.github+json"
@@ -42,6 +49,37 @@ API_VERSION="X-GitHub-Api-Version: 2022-11-28"
 IMPORTED=0
 SKIPPED=0
 FAILED=0
+
+# Helper: python3 replacement for jq
+# Usage: echo "$json" | pyjq 'python statements using d'
+pyjq() {
+  python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except:
+    d = None
+$1
+"
+}
+
+# Helper: read JSON file and extract value
+# Usage: pyread <file> 'python expression using d'
+pyread() {
+  python3 -c "
+import json
+try:
+    d = json.load(open('$1'))
+except:
+    d = None
+$2
+"
+}
+
+# Helper: format JSON (pretty-print)
+json_pp() {
+  python3 -c "import sys,json; json.dump(json.load(sys.stdin),sys.stdout,indent=2); print()"
+}
 
 # Helper: make an authenticated API call
 gh_api_get() {
@@ -95,7 +133,7 @@ fi
 echo ""
 
 echo "Verifying API access to target org..."
-TARGET_CHECK=$(gh_api_get "orgs/${TARGET_ORG}" | jq -r '.login // empty' 2>/dev/null || true)
+TARGET_CHECK=$(gh_api_get "orgs/${TARGET_ORG}" | pyjq 'print(d.get("login","") if d else "")')
 if [ -z "$TARGET_CHECK" ]; then
   echo "ERROR: Cannot access org '${TARGET_ORG}'. Check your GITHUB_TOKEN and org name."
   exit 1
@@ -112,34 +150,33 @@ echo "================================================================"
 
 if [ -f "${DUMP_DIR}/org/settings.json" ]; then
   echo "  Source settings:"
-  jq -r '
-    "    default_repository_permission: \(.default_repository_permission // "N/A")",
-    "    members_can_create_repositories: \(.members_can_create_repositories // "N/A")",
-    "    members_can_create_public_repositories: \(.members_can_create_public_repositories // "N/A")",
-    "    members_can_create_private_repositories: \(.members_can_create_private_repositories // "N/A")",
-    "    members_can_fork_private_repositories: \(.members_can_fork_private_repositories // "N/A")",
-    "    web_commit_signoff_required: \(.web_commit_signoff_required // "N/A")"
-  ' "${DUMP_DIR}/org/settings.json"
+  pyread "${DUMP_DIR}/org/settings.json" '
+if d:
+    for k in ["default_repository_permission","members_can_create_repositories",
+              "members_can_create_public_repositories","members_can_create_private_repositories",
+              "members_can_fork_private_repositories","web_commit_signoff_required"]:
+        print("    {}: {}".format(k, d.get(k, "N/A")))
+'
 
   if confirm "Apply organization settings to ${TARGET_ORG}?"; then
-    PAYLOAD=$(jq '{
-      default_repository_permission,
-      members_can_create_repositories,
-      members_can_create_public_repositories,
-      members_can_create_private_repositories,
-      members_can_create_internal_repositories,
-      members_can_fork_private_repositories,
-      web_commit_signoff_required,
-      has_organization_projects,
-      has_repository_projects
-    } | with_entries(select(.value != null))' "${DUMP_DIR}/org/settings.json")
+    PAYLOAD=$(pyread "${DUMP_DIR}/org/settings.json" '
+import json
+keys = ["default_repository_permission","members_can_create_repositories",
+        "members_can_create_public_repositories","members_can_create_private_repositories",
+        "members_can_create_internal_repositories","members_can_fork_private_repositories",
+        "web_commit_signoff_required","has_organization_projects","has_repository_projects"]
+out = {k: d[k] for k in keys if k in d and d[k] is not None}
+print(json.dumps(out))
+')
 
     RESULT=$(gh_api_patch "orgs/${TARGET_ORG}" "$PAYLOAD")
-    if echo "$RESULT" | jq -e '.login' > /dev/null 2>&1; then
+    HAS_LOGIN=$(echo "$RESULT" | pyjq 'print("yes" if d and "login" in d else "no")')
+    if [ "$HAS_LOGIN" = "yes" ]; then
       echo "  [OK] Organization settings applied."
       IMPORTED=$((IMPORTED + 1))
     else
-      echo "  [FAIL] $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+      ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+      echo "  [FAIL] ${ERR}"
       FAILED=$((FAILED + 1))
     fi
   else
@@ -160,24 +197,33 @@ echo "================================================================"
 
 if [ -f "${DUMP_DIR}/org/security-defaults.json" ]; then
   echo "  Source security defaults:"
-  jq -r 'to_entries[] | "    \(.key): \(.value // "N/A")"' "${DUMP_DIR}/org/security-defaults.json"
+  pyread "${DUMP_DIR}/org/security-defaults.json" '
+if d:
+    for k, v in d.items():
+        print("    {}: {}".format(k, v if v is not None else "N/A"))
+'
 
   if confirm "Apply security defaults to ${TARGET_ORG}?"; then
-    PAYLOAD=$(jq '{
-      advanced_security_enabled_for_new_repositories,
-      dependabot_alerts_enabled_for_new_repositories,
-      dependabot_security_updates_enabled_for_new_repositories,
-      dependency_graph_enabled_for_new_repositories,
-      secret_scanning_enabled_for_new_repositories,
-      secret_scanning_push_protection_enabled_for_new_repositories
-    } | with_entries(select(.value != null))' "${DUMP_DIR}/org/security-defaults.json")
+    PAYLOAD=$(pyread "${DUMP_DIR}/org/security-defaults.json" '
+import json
+keys = ["advanced_security_enabled_for_new_repositories",
+        "dependabot_alerts_enabled_for_new_repositories",
+        "dependabot_security_updates_enabled_for_new_repositories",
+        "dependency_graph_enabled_for_new_repositories",
+        "secret_scanning_enabled_for_new_repositories",
+        "secret_scanning_push_protection_enabled_for_new_repositories"]
+out = {k: d[k] for k in keys if k in d and d[k] is not None}
+print(json.dumps(out))
+')
 
     RESULT=$(gh_api_patch "orgs/${TARGET_ORG}" "$PAYLOAD")
-    if echo "$RESULT" | jq -e '.login' > /dev/null 2>&1; then
+    HAS_LOGIN=$(echo "$RESULT" | pyjq 'print("yes" if d and "login" in d else "no")')
+    if [ "$HAS_LOGIN" = "yes" ]; then
       echo "  [OK] Security defaults applied."
       IMPORTED=$((IMPORTED + 1))
     else
-      echo "  [FAIL] $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+      ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+      echo "  [FAIL] ${ERR}"
       FAILED=$((FAILED + 1))
     fi
   else
@@ -197,40 +243,58 @@ echo "[3/7] Teams"
 echo "================================================================"
 
 if [ -f "${DUMP_DIR}/teams/teams.json" ]; then
-  TEAM_COUNT=$(jq 'length' "${DUMP_DIR}/teams/teams.json")
+  TEAM_COUNT=$(pyread "${DUMP_DIR}/teams/teams.json" 'print(len(d) if d else 0)')
   echo "  Found ${TEAM_COUNT} teams in dump."
-  jq -r '.[] | "    - \(.name) (\(.privacy)): \(.description // "no description")"' "${DUMP_DIR}/teams/teams.json"
+  pyread "${DUMP_DIR}/teams/teams.json" '
+if d:
+    for t in d:
+        desc = t.get("description") or "no description"
+        print("    - {} ({}): {}".format(t.get("name",""), t.get("privacy",""), desc))
+'
 
   if confirm "Create/update ${TEAM_COUNT} teams in ${TARGET_ORG}?"; then
-    jq -c '.[]' "${DUMP_DIR}/teams/teams.json" | while read -r team; do
-      TEAM_NAME=$(echo "$team" | jq -r '.name')
-      TEAM_SLUG=$(echo "$team" | jq -r '.slug')
-      TEAM_DESC=$(echo "$team" | jq -r '.description // ""')
-      TEAM_PRIVACY=$(echo "$team" | jq -r '.privacy // "closed"')
+    pyread "${DUMP_DIR}/teams/teams.json" '
+import json
+if d:
+    for t in d:
+        print(json.dumps(t))
+' | while read -r team_json; do
+      [ -z "$team_json" ] && continue
+      TEAM_NAME=$(echo "$team_json" | pyjq 'print(d.get("name",""))')
+      TEAM_SLUG=$(echo "$team_json" | pyjq 'print(d.get("slug",""))')
+      TEAM_DESC=$(echo "$team_json" | pyjq 'print(d.get("description","") or "")')
+      TEAM_PRIVACY=$(echo "$team_json" | pyjq 'print(d.get("privacy","closed"))')
 
       # Check if team already exists
       EXISTING=$(gh_api_get "orgs/${TARGET_ORG}/teams/${TEAM_SLUG}" 2>/dev/null)
-      if echo "$EXISTING" | jq -e '.id' > /dev/null 2>&1; then
+      HAS_ID=$(echo "$EXISTING" | pyjq 'print("yes" if d and "id" in d else "no")')
+
+      PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({'name': '$TEAM_NAME', 'description': '$TEAM_DESC', 'privacy': '$TEAM_PRIVACY'}))
+")
+
+      if [ "$HAS_ID" = "yes" ]; then
         # Update existing team
-        PAYLOAD=$(jq -n --arg name "$TEAM_NAME" --arg desc "$TEAM_DESC" --arg priv "$TEAM_PRIVACY" \
-          '{name: $name, description: $desc, privacy: $priv}')
         RESULT=$(gh_api_patch "orgs/${TARGET_ORG}/teams/${TEAM_SLUG}" "$PAYLOAD")
-        if echo "$RESULT" | jq -e '.id' > /dev/null 2>&1; then
+        R_ID=$(echo "$RESULT" | pyjq 'print("yes" if d and "id" in d else "no")')
+        if [ "$R_ID" = "yes" ]; then
           echo "  [OK] Updated team: ${TEAM_NAME}"
         else
-          echo "  [FAIL] Update team ${TEAM_NAME}: $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+          ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+          echo "  [FAIL] Update team ${TEAM_NAME}: ${ERR}"
           FAILED=$((FAILED + 1))
           continue
         fi
       else
         # Create new team
-        PAYLOAD=$(jq -n --arg name "$TEAM_NAME" --arg desc "$TEAM_DESC" --arg priv "$TEAM_PRIVACY" \
-          '{name: $name, description: $desc, privacy: $priv}')
         RESULT=$(gh_api_post "orgs/${TARGET_ORG}/teams" "$PAYLOAD")
-        if echo "$RESULT" | jq -e '.id' > /dev/null 2>&1; then
+        R_ID=$(echo "$RESULT" | pyjq 'print("yes" if d and "id" in d else "no")')
+        if [ "$R_ID" = "yes" ]; then
           echo "  [OK] Created team: ${TEAM_NAME}"
         else
-          echo "  [FAIL] Create team ${TEAM_NAME}: $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+          ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+          echo "  [FAIL] Create team ${TEAM_NAME}: ${ERR}"
           FAILED=$((FAILED + 1))
           continue
         fi
@@ -239,12 +303,19 @@ if [ -f "${DUMP_DIR}/teams/teams.json" ]; then
       # Add members
       MEMBERS_FILE="${DUMP_DIR}/teams/team-${TEAM_SLUG}-members.json"
       if [ -f "$MEMBERS_FILE" ]; then
-        jq -r '.[].login' "$MEMBERS_FILE" 2>/dev/null | while read -r login; do
+        pyread "$MEMBERS_FILE" '
+if d:
+    for m in d:
+        print(m.get("login",""))
+' | while read -r login; do
+          [ -z "$login" ] && continue
           RESULT=$(gh_api_put "orgs/${TARGET_ORG}/teams/${TEAM_SLUG}/memberships/${login}" '{"role":"member"}')
-          if echo "$RESULT" | jq -e '.state' > /dev/null 2>&1; then
+          HAS_STATE=$(echo "$RESULT" | pyjq 'print("yes" if d and "state" in d else "no")')
+          if [ "$HAS_STATE" = "yes" ]; then
             echo "    [OK] Added member: ${login}"
           else
-            echo "    [WARN] Could not add ${login}: $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+            ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+            echo "    [WARN] Could not add ${login}: ${ERR}"
           fi
         done
       fi
@@ -268,43 +339,69 @@ echo "[4/7] Organization Rulesets"
 echo "================================================================"
 
 if [ -f "${DUMP_DIR}/rulesets/org-rulesets-summary.json" ]; then
-  RULESET_COUNT=$(jq 'if type == "array" then length else 0 end' "${DUMP_DIR}/rulesets/org-rulesets-summary.json")
+  RULESET_COUNT=$(pyread "${DUMP_DIR}/rulesets/org-rulesets-summary.json" 'print(len(d) if isinstance(d, list) else 0)')
   echo "  Found ${RULESET_COUNT} rulesets in dump."
 
   if [ "$RULESET_COUNT" -gt 0 ]; then
-    jq -r '.[] | "    - \(.name) (enforcement: \(.enforcement), target: \(.target))"' \
-      "${DUMP_DIR}/rulesets/org-rulesets-summary.json"
+    pyread "${DUMP_DIR}/rulesets/org-rulesets-summary.json" '
+if d and isinstance(d, list):
+    for r in d:
+        print("    - {} (enforcement: {}, target: {})".format(r.get("name",""), r.get("enforcement",""), r.get("target","")))
+'
 
     if confirm "Create ${RULESET_COUNT} rulesets in ${TARGET_ORG}?"; then
       for ruleset_file in "${DUMP_DIR}"/rulesets/ruleset-*.json; do
         [ -f "$ruleset_file" ] || continue
 
-        RULESET_NAME=$(jq -r '.name' "$ruleset_file")
+        RULESET_NAME=$(pyread "$ruleset_file" 'print(d.get("name","unknown") if d else "unknown")')
 
         # Check if ruleset already exists by name
         EXISTING_RULESETS=$(gh_api_get "orgs/${TARGET_ORG}/rulesets" 2>/dev/null || echo "[]")
-        EXISTING_ID=$(echo "$EXISTING_RULESETS" | jq -r ".[] | select(.name == \"${RULESET_NAME}\") | .id // empty" 2>/dev/null || true)
+        EXISTING_ID=$(echo "$EXISTING_RULESETS" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for r in (d if isinstance(d, list) else []):
+        if r.get('name') == '$RULESET_NAME':
+            print(r.get('id',''))
+            break
+    else:
+        print('')
+except:
+    print('')
+")
 
-        # Build payload — strip id, node_id, _links, source, and other read-only fields
-        PAYLOAD=$(jq 'del(.id, .node_id, ._links, .source, .created_at, .updated_at, .current_user_can_bypass)' "$ruleset_file")
+        # Build payload — strip read-only fields
+        PAYLOAD=$(pyread "$ruleset_file" '
+import json
+if d:
+    for k in ["id","node_id","_links","source","created_at","updated_at","current_user_can_bypass"]:
+        d.pop(k, None)
+    print(json.dumps(d))
+else:
+    print("{}")
+')
 
         if [ -n "$EXISTING_ID" ]; then
           RESULT=$(gh_api_put "orgs/${TARGET_ORG}/rulesets/${EXISTING_ID}" "$PAYLOAD")
-          if echo "$RESULT" | jq -e '.id' > /dev/null 2>&1; then
+          R_ID=$(echo "$RESULT" | pyjq 'print("yes" if d and "id" in d else "no")')
+          if [ "$R_ID" = "yes" ]; then
             echo "  [OK] Updated ruleset: ${RULESET_NAME}"
             IMPORTED=$((IMPORTED + 1))
           else
-            echo "  [FAIL] Update ruleset ${RULESET_NAME}: $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
+            ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+            echo "  [FAIL] Update ruleset ${RULESET_NAME}: ${ERR}"
             FAILED=$((FAILED + 1))
           fi
         else
           RESULT=$(gh_api_post "orgs/${TARGET_ORG}/rulesets" "$PAYLOAD")
-          if echo "$RESULT" | jq -e '.id' > /dev/null 2>&1; then
+          R_ID=$(echo "$RESULT" | pyjq 'print("yes" if d and "id" in d else "no")')
+          if [ "$R_ID" = "yes" ]; then
             echo "  [OK] Created ruleset: ${RULESET_NAME}"
             IMPORTED=$((IMPORTED + 1))
           else
-            echo "  [FAIL] Create ruleset ${RULESET_NAME}: $(echo "$RESULT" | jq -r '.message // "Unknown error"')"
-            echo "    Detail: $(echo "$RESULT" | jq -r '.errors // empty')"
+            ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+            echo "  [FAIL] Create ruleset ${RULESET_NAME}: ${ERR}"
             FAILED=$((FAILED + 1))
           fi
         fi
@@ -329,20 +426,26 @@ echo "[5/7] Repository Settings"
 echo "================================================================"
 
 if [ -f "${DUMP_DIR}/repos/repo-list.json" ]; then
-  REPO_COUNT=$(jq 'length' "${DUMP_DIR}/repos/repo-list.json")
+  REPO_COUNT=$(pyread "${DUMP_DIR}/repos/repo-list.json" 'print(len(d) if d else 0)')
   echo "  Found ${REPO_COUNT} repos in dump."
   echo ""
   echo "  NOTE: This applies security settings and branch protection to repos"
   echo "  that ALREADY EXIST in ${TARGET_ORG}. It does NOT create repos."
 
   if confirm "Apply repo settings to existing repos in ${TARGET_ORG}?"; then
-    jq -r '.[].name' "${DUMP_DIR}/repos/repo-list.json" | while read -r repo; do
+    pyread "${DUMP_DIR}/repos/repo-list.json" '
+if d:
+    for r in d:
+        print(r.get("name",""))
+' | while read -r repo; do
+      [ -z "$repo" ] && continue
       REPO_DIR="${DUMP_DIR}/repos/${repo}"
       [ -d "$REPO_DIR" ] || continue
 
       # Check if repo exists in target org
       EXISTING=$(gh_api_get "repos/${TARGET_ORG}/${repo}" 2>/dev/null)
-      if ! echo "$EXISTING" | jq -e '.id' > /dev/null 2>&1; then
+      HAS_ID=$(echo "$EXISTING" | pyjq 'print("yes" if d and "id" in d else "no")')
+      if [ "$HAS_ID" != "yes" ]; then
         echo "  [SKIP] ${repo} — does not exist in ${TARGET_ORG}"
         continue
       fi
@@ -351,67 +454,98 @@ if [ -f "${DUMP_DIR}/repos/repo-list.json" ]; then
 
       # Apply repo settings (security, merge options)
       if [ -f "${REPO_DIR}/settings.json" ]; then
-        PAYLOAD=$(jq '{
-          has_issues,
-          has_wiki,
-          has_projects,
-          delete_branch_on_merge,
-          allow_squash_merge,
-          allow_merge_commit,
-          allow_rebase_merge,
-          allow_auto_merge
-        } | with_entries(select(.value != null))' "${REPO_DIR}/settings.json")
+        PAYLOAD=$(pyread "${REPO_DIR}/settings.json" '
+import json
+if d:
+    keys = ["has_issues","has_wiki","has_projects","delete_branch_on_merge",
+            "allow_squash_merge","allow_merge_commit","allow_rebase_merge","allow_auto_merge"]
+    out = {k: d[k] for k in keys if k in d and d[k] is not None}
+    print(json.dumps(out))
+else:
+    print("{}")
+')
 
         RESULT=$(gh_api_patch "repos/${TARGET_ORG}/${repo}" "$PAYLOAD")
-        if echo "$RESULT" | jq -e '.id' > /dev/null 2>&1; then
+        R_ID=$(echo "$RESULT" | pyjq 'print("yes" if d and "id" in d else "no")')
+        if [ "$R_ID" = "yes" ]; then
           CHANGES_MADE=true
         fi
 
         # Apply topics
-        TOPICS=$(jq -r '.topics // []' "${REPO_DIR}/settings.json")
-        if [ "$TOPICS" != "[]" ] && [ "$TOPICS" != "null" ]; then
+        TOPICS=$(pyread "${REPO_DIR}/settings.json" '
+import json
+topics = d.get("topics", []) if d else []
+if topics:
+    print(json.dumps(topics))
+else:
+    print("")
+')
+        if [ -n "$TOPICS" ]; then
           gh_api_put "repos/${TARGET_ORG}/${repo}/topics" "{\"names\": ${TOPICS}}" > /dev/null 2>&1 || true
         fi
 
         # Enable security features
-        SS=$(jq -r '.security_and_analysis.secret_scanning.status // "disabled"' "${REPO_DIR}/settings.json" 2>/dev/null)
-        PP=$(jq -r '.security_and_analysis.secret_scanning_push_protection.status // "disabled"' "${REPO_DIR}/settings.json" 2>/dev/null)
-
-        SECURITY_PAYLOAD=$(jq -n \
-          --arg ss "$SS" --arg pp "$PP" \
-          '{security_and_analysis: {secret_scanning: {status: $ss}, secret_scanning_push_protection: {status: $pp}}}')
+        SECURITY_PAYLOAD=$(pyread "${REPO_DIR}/settings.json" '
+import json
+if d:
+    sa = d.get("security_and_analysis") or {}
+    ss = (sa.get("secret_scanning") or {}).get("status", "disabled")
+    pp = (sa.get("secret_scanning_push_protection") or {}).get("status", "disabled")
+    print(json.dumps({"security_and_analysis": {"secret_scanning": {"status": ss}, "secret_scanning_push_protection": {"status": pp}}}))
+else:
+    print("{}")
+')
         gh_api_patch "repos/${TARGET_ORG}/${repo}" "$SECURITY_PAYLOAD" > /dev/null 2>&1 || true
       fi
 
       # Apply branch protection
       if [ -f "${REPO_DIR}/branch-protection.json" ]; then
-        BP_STATUS=$(jq -r '.status // empty' "${REPO_DIR}/branch-protection.json" 2>/dev/null)
-        if [ "$BP_STATUS" != "not configured" ] && [ -n "$BP_STATUS" ] || [ -z "$BP_STATUS" ]; then
-          DEFAULT_BRANCH=$(jq -r '.default_branch // "main"' "${REPO_DIR}/settings.json" 2>/dev/null || echo "main")
+        BP_HAS_PROTECTION=$(pyread "${REPO_DIR}/branch-protection.json" '
+if d:
+    print("no" if d.get("status") == "not configured" else "yes")
+else:
+    print("no")
+')
+        if [ "$BP_HAS_PROTECTION" = "yes" ]; then
+          DEFAULT_BRANCH=$(pyread "${REPO_DIR}/settings.json" 'print(d.get("default_branch","main") if d else "main")')
 
           # Build branch protection payload from dump
-          BP_PAYLOAD=$(jq '{
-            required_status_checks: (if .required_status_checks then {
-              strict: .required_status_checks.strict,
-              contexts: .required_status_checks.contexts
-            } else null end),
-            enforce_admins: .enforce_admins.enabled,
-            required_pull_request_reviews: (if .required_pull_request_reviews then {
-              dismiss_stale_reviews: .required_pull_request_reviews.dismiss_stale_reviews,
-              require_code_owner_reviews: .required_pull_request_reviews.require_code_owner_reviews,
-              required_approving_review_count: .required_pull_request_reviews.required_approving_review_count,
-              require_last_push_approval: .required_pull_request_reviews.require_last_push_approval
-            } else null end),
-            restrictions: null,
-            required_linear_history: .required_linear_history.enabled,
-            allow_force_pushes: .allow_force_pushes.enabled,
-            allow_deletions: .allow_deletions.enabled,
-            required_conversation_resolution: .required_conversation_resolution.enabled
-          } | with_entries(select(.value != null))' "${REPO_DIR}/branch-protection.json" 2>/dev/null)
+          BP_PAYLOAD=$(pyread "${REPO_DIR}/branch-protection.json" '
+import json
+if d:
+    out = {}
+    rsc = d.get("required_status_checks")
+    if rsc:
+        out["required_status_checks"] = {"strict": rsc.get("strict", False), "contexts": rsc.get("contexts", [])}
+    ea = d.get("enforce_admins")
+    if isinstance(ea, dict):
+        out["enforce_admins"] = ea.get("enabled", False)
+    elif isinstance(ea, bool):
+        out["enforce_admins"] = ea
+    rpr = d.get("required_pull_request_reviews")
+    if rpr:
+        pr_out = {}
+        for k in ["dismiss_stale_reviews","require_code_owner_reviews","required_approving_review_count","require_last_push_approval"]:
+            if k in rpr and rpr[k] is not None:
+                pr_out[k] = rpr[k]
+        if pr_out:
+            out["required_pull_request_reviews"] = pr_out
+    out["restrictions"] = None
+    for k in ["required_linear_history","allow_force_pushes","allow_deletions","required_conversation_resolution"]:
+        v = d.get(k)
+        if isinstance(v, dict):
+            out[k] = v.get("enabled", False)
+        elif isinstance(v, bool):
+            out[k] = v
+    print(json.dumps(out))
+else:
+    print("{}")
+')
 
-          if [ -n "$BP_PAYLOAD" ] && [ "$BP_PAYLOAD" != "{}" ]; then
+          if [ "$BP_PAYLOAD" != "{}" ]; then
             RESULT=$(gh_api_put "repos/${TARGET_ORG}/${repo}/branches/${DEFAULT_BRANCH}/protection" "$BP_PAYLOAD")
-            if echo "$RESULT" | jq -e '.url' > /dev/null 2>&1; then
+            HAS_URL=$(echo "$RESULT" | pyjq 'print("yes" if d and "url" in d else "no")')
+            if [ "$HAS_URL" = "yes" ]; then
               CHANGES_MADE=true
             fi
           fi
@@ -442,40 +576,50 @@ echo "[6/7] Team Repository Access"
 echo "================================================================"
 
 if [ -f "${DUMP_DIR}/teams/teams.json" ]; then
-  TEAM_COUNT=$(jq 'length' "${DUMP_DIR}/teams/teams.json")
+  TEAM_COUNT=$(pyread "${DUMP_DIR}/teams/teams.json" 'print(len(d) if d else 0)')
   echo "  Found ${TEAM_COUNT} teams with repo access mappings."
 
   if confirm "Apply team-repo access permissions in ${TARGET_ORG}?"; then
-    jq -r '.[].slug' "${DUMP_DIR}/teams/teams.json" | while read -r slug; do
+    pyread "${DUMP_DIR}/teams/teams.json" '
+if d:
+    for t in d:
+        print(t.get("slug",""))
+' | while read -r slug; do
+      [ -z "$slug" ] && continue
       REPOS_FILE="${DUMP_DIR}/teams/team-${slug}-repos.json"
       [ -f "$REPOS_FILE" ] || continue
 
-      REPO_ACCESS_COUNT=$(jq 'length' "$REPOS_FILE")
+      REPO_ACCESS_COUNT=$(pyread "$REPOS_FILE" 'print(len(d) if d else 0)')
       [ "$REPO_ACCESS_COUNT" -eq 0 ] && continue
 
       echo "  Team: ${slug} (${REPO_ACCESS_COUNT} repos)"
-      jq -c '.[]' "$REPOS_FILE" | while read -r entry; do
-        REPO_NAME=$(echo "$entry" | jq -r '.name')
-        # Determine highest permission
-        PERMISSION=$(echo "$entry" | jq -r '
-          if .permissions.admin then "admin"
-          elif .permissions.maintain then "maintain"
-          elif .permissions.push then "push"
-          elif .permissions.triage then "triage"
-          else "pull"
-          end
-        ')
+      pyread "$REPOS_FILE" '
+import json
+if d:
+    for entry in d:
+        print(json.dumps(entry))
+' | while read -r entry_json; do
+        [ -z "$entry_json" ] && continue
+        REPO_NAME=$(echo "$entry_json" | pyjq 'print(d.get("name",""))')
+        PERMISSION=$(echo "$entry_json" | pyjq '
+perms = d.get("permissions", {}) if d else {}
+if perms.get("admin"): print("admin")
+elif perms.get("maintain"): print("maintain")
+elif perms.get("push"): print("push")
+elif perms.get("triage"): print("triage")
+else: print("pull")
+')
 
         # Check if repo exists in target
         EXISTING=$(gh_api_get "repos/${TARGET_ORG}/${REPO_NAME}" 2>/dev/null)
-        if ! echo "$EXISTING" | jq -e '.id' > /dev/null 2>&1; then
+        HAS_ID=$(echo "$EXISTING" | pyjq 'print("yes" if d and "id" in d else "no")')
+        if [ "$HAS_ID" != "yes" ]; then
           echo "    [SKIP] ${REPO_NAME} — repo not in ${TARGET_ORG}"
           continue
         fi
 
-        RESULT=$(gh_api_put "orgs/${TARGET_ORG}/teams/${slug}/repos/${TARGET_ORG}/${REPO_NAME}" \
-          "{\"permission\": \"${PERMISSION}\"}")
-        # PUT returns 204 (no content) on success
+        gh_api_put "orgs/${TARGET_ORG}/teams/${slug}/repos/${TARGET_ORG}/${REPO_NAME}" \
+          "{\"permission\": \"${PERMISSION}\"}" > /dev/null 2>&1
         echo "    [OK] ${REPO_NAME} -> ${PERMISSION}"
       done
       IMPORTED=$((IMPORTED + 1))
@@ -497,29 +641,43 @@ echo "[7/7] Organization Actions Variables"
 echo "================================================================"
 
 if [ -f "${DUMP_DIR}/org/actions-variables.json" ]; then
-  VAR_COUNT=$(jq '.total_count // 0' "${DUMP_DIR}/org/actions-variables.json")
+  VAR_COUNT=$(pyread "${DUMP_DIR}/org/actions-variables.json" 'print(d.get("total_count", 0) if d else 0)')
   echo "  Found ${VAR_COUNT} org-level variables in dump."
 
   if [ "$VAR_COUNT" -gt 0 ]; then
-    jq -r '.variables[] | "    - \(.name) = \(.value) (visibility: \(.visibility))"' \
-      "${DUMP_DIR}/org/actions-variables.json"
+    pyread "${DUMP_DIR}/org/actions-variables.json" '
+if d:
+    for v in d.get("variables", []):
+        print("    - {} = {} (visibility: {})".format(v.get("name",""), v.get("value",""), v.get("visibility","")))
+'
 
     if confirm "Create/update ${VAR_COUNT} org variables in ${TARGET_ORG}?"; then
-      jq -c '.variables[]' "${DUMP_DIR}/org/actions-variables.json" | while read -r var; do
-        VAR_NAME=$(echo "$var" | jq -r '.name')
-        VAR_VALUE=$(echo "$var" | jq -r '.value')
-        VAR_VIS=$(echo "$var" | jq -r '.visibility // "private"')
+      pyread "${DUMP_DIR}/org/actions-variables.json" '
+import json
+if d:
+    for v in d.get("variables", []):
+        print(json.dumps(v))
+' | while read -r var_json; do
+        [ -z "$var_json" ] && continue
+        VAR_NAME=$(echo "$var_json" | pyjq 'print(d.get("name",""))')
+        VAR_VALUE=$(echo "$var_json" | pyjq 'print(d.get("value",""))')
+        VAR_VIS=$(echo "$var_json" | pyjq 'print(d.get("visibility","private"))')
 
-        PAYLOAD=$(jq -n --arg name "$VAR_NAME" --arg value "$VAR_VALUE" --arg vis "$VAR_VIS" \
-          '{name: $name, value: $value, visibility: $vis}')
+        PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({'name': '$VAR_NAME', 'value': '$VAR_VALUE', 'visibility': '$VAR_VIS'}))
+")
 
         # Try update first, then create
         RESULT=$(gh_api_patch "orgs/${TARGET_ORG}/actions/variables/${VAR_NAME}" "$PAYLOAD" 2>/dev/null)
-        if echo "$RESULT" | jq -e '.message' > /dev/null 2>&1; then
+        HAS_MSG=$(echo "$RESULT" | pyjq 'print("yes" if d and "message" in d else "no")')
+        if [ "$HAS_MSG" = "yes" ]; then
           # Doesn't exist, create it
           RESULT=$(gh_api_post "orgs/${TARGET_ORG}/actions/variables" "$PAYLOAD")
-          if echo "$RESULT" | jq -e '.message' > /dev/null 2>&1; then
-            echo "  [FAIL] ${VAR_NAME}: $(echo "$RESULT" | jq -r '.message')"
+          HAS_MSG2=$(echo "$RESULT" | pyjq 'print("yes" if d and "message" in d else "no")')
+          if [ "$HAS_MSG2" = "yes" ]; then
+            ERR=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
+            echo "  [FAIL] ${VAR_NAME}: ${ERR}"
             FAILED=$((FAILED + 1))
           else
             echo "  [OK] Created variable: ${VAR_NAME}"
@@ -536,15 +694,24 @@ if [ -f "${DUMP_DIR}/org/actions-variables.json" ]; then
   fi
 
   # Secrets reminder
-  SECRET_COUNT=$(jq '.total_count // 0' "${DUMP_DIR}/org/actions-secrets.json" 2>/dev/null || echo "0")
-  if [ "$SECRET_COUNT" -gt 0 ]; then
-    echo ""
-    echo "  NOTE: ${SECRET_COUNT} org-level secrets were found in the dump (names only)."
-    echo "  Secret VALUES are never exported. You must set them manually:"
-    echo ""
-    jq -r '.secrets[] | "    export SECRET_VALUE=\"...\"\n    curl -X PUT \\\n      -H \"Authorization: Bearer $GITHUB_TOKEN\" \\\n      -H \"Accept: application/vnd.github+json\" \\\n      \"https://api.github.com/orgs/'${TARGET_ORG}'/actions/secrets/\(.name)\" \\\n      -d \"{\\\"visibility\\\": \\\"\(.visibility)\\\", \\\"encrypted_value\\\": \\\"$SECRET_VALUE\\\"}\"\n"' \
-      "${DUMP_DIR}/org/actions-secrets.json" 2>/dev/null || true
-    echo "  See: https://docs.github.com/en/rest/actions/secrets"
+  if [ -f "${DUMP_DIR}/org/actions-secrets.json" ]; then
+    SECRET_COUNT=$(pyread "${DUMP_DIR}/org/actions-secrets.json" 'print(d.get("total_count", 0) if d else 0)')
+    if [ "$SECRET_COUNT" -gt 0 ]; then
+      echo ""
+      echo "  NOTE: ${SECRET_COUNT} org-level secrets were found in the dump (names only)."
+      echo "  Secret VALUES are never exported. You must set them manually:"
+      echo ""
+      pyread "${DUMP_DIR}/org/actions-secrets.json" "
+if d:
+    for s in d.get('secrets', []):
+        name = s.get('name','')
+        vis = s.get('visibility','')
+        print('    # Secret: {} (visibility: {})'.format(name, vis))
+        print('    # Use GitHub UI or API with encrypted_value to set')
+        print()
+"
+      echo "  See: https://docs.github.com/en/rest/actions/secrets"
+    fi
   fi
 else
   echo "  No actions-variables.json found. Skipping."
@@ -581,6 +748,17 @@ echo "    - Repos (use Terraform or create manually, then re-run this script)"
 echo "    - CODEOWNERS files (committed in repo, migrated with git mirror)"
 
 # Rate limit check
-RATE=$(gh_api_get "rate_limit" | jq '.rate | {remaining, limit, reset: (.reset | todate)}' 2>/dev/null || echo '{}')
+RATE_INFO=$(gh_api_get "rate_limit" | python3 -c "
+import sys, json
+from datetime import datetime, timezone
+try:
+    d = json.load(sys.stdin)
+    r = d.get('rate', {})
+    reset_ts = r.get('reset', 0)
+    reset_dt = datetime.fromtimestamp(reset_ts, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print('{}/{} remaining (resets {})'.format(r.get('remaining','?'), r.get('limit','?'), reset_dt))
+except:
+    print('unknown')
+")
 echo ""
-echo "API rate limit: $(echo "$RATE" | jq -r '"\(.remaining)/\(.limit) remaining (resets \(.reset))"' 2>/dev/null || echo "unknown")"
+echo "API rate limit: ${RATE_INFO}"
