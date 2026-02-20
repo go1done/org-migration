@@ -79,32 +79,31 @@ gh_api() {
 gh_api_paginated() {
   local endpoint="$1"
   local url="${API}/${endpoint}"
-  local tmpfile
+  local tmpfile pagefile
   tmpfile=$(mktemp)
   echo "[]" > "$tmpfile"
 
   while [ -n "$url" ]; do
     local response_headers
     response_headers=$(mktemp)
-    local body
-    body=$(curl -sL -D "$response_headers" -H "$AUTH_HEADER" -H "$ACCEPT" -H "$API_VERSION" "$url")
+    pagefile=$(mktemp)
+    curl -sL -D "$response_headers" -H "$AUTH_HEADER" -H "$ACCEPT" -H "$API_VERSION" "$url" > "$pagefile"
 
-    # Merge results
+    # Merge results using temp files (avoids arg list too long)
     python3 -c "
-import sys, json
+import json
 with open('$tmpfile') as f:
     acc = json.load(f)
-try:
-    page = json.loads('''$body''')
-except:
-    page = json.loads(sys.stdin.read())
+with open('$pagefile') as f:
+    page = json.load(f)
 if isinstance(page, list):
     acc.extend(page)
 else:
     acc.append(page)
 with open('$tmpfile', 'w') as f:
     json.dump(acc, f)
-" <<< "$body" 2>/dev/null || true
+" 2>/dev/null || true
+    rm -f "$pagefile"
 
     # Check for next page in Link header
     url=$(grep -i '^link:' "$response_headers" | sed -n 's/.*<\([^>]*\)>; rel="next".*/\1/p' || true)
@@ -209,23 +208,40 @@ fi
 # ---------------------------------------------------------------
 echo "[3/8] Repository settings..."
 
+# Use temp files to avoid "Argument list too long" for large orgs
+REPOS_FILE=$(mktemp)
+echo "[]" > "$REPOS_FILE"
+trap "rm -f '$REPOS_FILE'" EXIT
+
 # Fetch all repos (paginated, 100 per page)
-REPOS="[]"
 PAGE=1
 while true; do
-  BATCH=$(gh_api "orgs/${ORG}/repos?type=all&per_page=100&page=${PAGE}")
-  BATCH_COUNT=$(echo "$BATCH" | pyjq 'print(len(d) if isinstance(d, list) else 0)')
+  BATCH_FILE=$(mktemp)
+  gh_api "orgs/${ORG}/repos?type=all&per_page=100&page=${PAGE}" > "$BATCH_FILE"
+  BATCH_COUNT=$(python3 -c "
+import json
+try:
+    d = json.load(open('$BATCH_FILE'))
+    print(len(d) if isinstance(d, list) else 0)
+except:
+    print(0)
+")
   if [ "$BATCH_COUNT" -eq 0 ]; then
+    rm -f "$BATCH_FILE"
     break
   fi
-  REPOS=$(python3 -c "
-import json, sys
-a = json.loads('''$(echo "$REPOS")''')
-b = json.loads(sys.stdin.read())
-if isinstance(b, list):
-    a.extend(b)
-json.dump(a, sys.stdout)
-" <<< "$BATCH")
+  python3 -c "
+import json
+with open('$REPOS_FILE') as f:
+    acc = json.load(f)
+with open('$BATCH_FILE') as f:
+    batch = json.load(f)
+if isinstance(batch, list):
+    acc.extend(batch)
+with open('$REPOS_FILE', 'w') as f:
+    json.dump(acc, f)
+"
+  rm -f "$BATCH_FILE"
   if [ "$BATCH_COUNT" -lt 100 ]; then
     break
   fi
@@ -233,27 +249,31 @@ json.dump(a, sys.stdout)
 done
 
 # Filter out archived repos
-REPOS=$(echo "$REPOS" | pyjq '
+python3 -c "
 import json
-out = [r for r in (d if isinstance(d, list) else []) if not r.get("archived", False)]
-json.dump(out, sys.stdout)
-')
-REPO_COUNT=$(echo "$REPOS" | pyjq 'print(len(d) if isinstance(d, list) else 0)')
+with open('$REPOS_FILE') as f:
+    d = json.load(f)
+out = [r for r in (d if isinstance(d, list) else []) if not r.get('archived', False)]
+with open('$REPOS_FILE', 'w') as f:
+    json.dump(out, f)
+"
+REPO_COUNT=$(python3 -c "import json; print(len(json.load(open('$REPOS_FILE'))))")
 echo "  Found ${REPO_COUNT} active repos."
 
 # Save repo list
-echo "$REPOS" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
+python3 -c "
+import json
+d = json.load(open('$REPOS_FILE'))
 out = [{'name': r.get('name'), 'visibility': r.get('visibility'), 'default_branch': r.get('default_branch'), 'description': r.get('description')} for r in d]
-json.dump(out, sys.stdout, indent=2)
-print()
-" > "${OUTPUT_DIR}/repos/repo-list.json"
+with open('${OUTPUT_DIR}/repos/repo-list.json', 'w') as f:
+    json.dump(out, f, indent=2)
+"
 
-echo "$REPOS" | pyjq '
-for r in (d if isinstance(d, list) else []):
-    print(r.get("name",""))
-' | while read -r repo; do
+python3 -c "
+import json
+for r in json.load(open('$REPOS_FILE')):
+    print(r.get('name',''))
+" | while read -r repo; do
   [ -z "$repo" ] && continue
   mkdir -p "${OUTPUT_DIR}/repos/${repo}"
 
@@ -269,8 +289,9 @@ print()
 " > "${OUTPUT_DIR}/repos/${repo}/settings.json" 2>/dev/null || echo '{}' > "${OUTPUT_DIR}/repos/${repo}/settings.json"
 
   # Branch protection on default branch
-  DEFAULT_BRANCH=$(echo "$REPOS" | pyjq "
-for r in (d if isinstance(d, list) else []):
+  DEFAULT_BRANCH=$(python3 -c "
+import json
+for r in json.load(open('$REPOS_FILE')):
     if r.get('name') == '$repo':
         print(r.get('default_branch','main'))
         break
@@ -451,10 +472,11 @@ echo "  Found ${VAR_COUNT} org-level variables."
 # 6. Dependabot alerts summary
 # ---------------------------------------------------------------
 echo "[6/8] Dependabot alerts summary..."
-echo "$REPOS" | pyjq '
-for r in (d if isinstance(d, list) else []):
-    print(r.get("name",""))
-' | while read -r repo; do
+python3 -c "
+import json
+for r in json.load(open('$REPOS_FILE')):
+    print(r.get('name',''))
+" | while read -r repo; do
   [ -z "$repo" ] && continue
   ALERTS=$(gh_api "repos/${ORG}/${repo}/dependabot/alerts?state=open&per_page=1" 2>/dev/null || echo "[]")
   ALERTS_IS_ERROR=$(echo "$ALERTS" | pyjq 'print("yes" if isinstance(d, dict) and "message" in d else "no")')
@@ -482,10 +504,11 @@ echo "  Done."
 # 7. Code scanning status
 # ---------------------------------------------------------------
 echo "[7/8] Code scanning status..."
-echo "$REPOS" | pyjq '
-for r in (d if isinstance(d, list) else []):
-    print(r.get("name",""))
-' | while read -r repo; do
+python3 -c "
+import json
+for r in json.load(open('$REPOS_FILE')):
+    print(r.get('name',''))
+" | while read -r repo; do
   [ -z "$repo" ] && continue
   SCAN=$(gh_api "repos/${ORG}/${repo}/code-scanning/alerts?per_page=1" 2>/dev/null || echo '{"message":"not found"}')
   SCAN_IS_ERROR=$(echo "$SCAN" | pyjq 'print("yes" if isinstance(d, dict) and "message" in d else "no")')
@@ -554,10 +577,11 @@ for r in (d if isinstance(d, list) else []):
   echo "| Repo | Secret Scan | Push Protect | Branch Protect | CODEOWNERS | Rulesets |"
   echo "|------|------------|-------------|---------------|------------|---------|"
 
-  echo "$REPOS" | pyjq '
-for r in (d if isinstance(d, list) else []):
-    print(r.get("name",""))
-' | while read -r repo; do
+  python3 -c "
+import json
+for r in json.load(open('$REPOS_FILE')):
+    print(r.get('name',''))
+" | while read -r repo; do
     [ -z "$repo" ] && continue
     SS=$(python3 -c "
 import json
