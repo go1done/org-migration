@@ -17,3 +17,9 @@ override.tf.json
 # Environment variable files
 .env
 *.env
+
+# Proxy config (contains tokens)
+proxy-env.sh
+
+# IDE
+.idea/

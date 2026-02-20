@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# proxy-env.template — Copy to proxy-env.sh and fill in values
+# Usage: source proxy-env.sh
+#
+# Required when running behind a Kerberos/SPNEGO corporate proxy.
+# cntlm must be running locally to handle Kerberos authentication.
+
+# --- Proxy (cntlm) ---
+export HTTP_PROXY="http://127.0.0.1:3128"
+export HTTPS_PROXY="http://127.0.0.1:3128"
+export NO_PROXY="localhost,127.0.0.1,169.254.169.254,.internal.example.com"
+
+# --- GitHub ---
+export GITHUB_TOKEN="ghp_CHANGEME"
+
+# --- Terraform ---
+export TF_VAR_github_org="CHANGEME-new-org"
+
+# --- AWS ---
+# If using IAM Identity Center / SSO profiles, these may already be set.
+# Otherwise, uncomment and populate:
+# export AWS_ACCESS_KEY_ID="CHANGEME"
+# export AWS_SECRET_ACCESS_KEY="CHANGEME"
+# export AWS_DEFAULT_REGION="ap-southeast-2"
