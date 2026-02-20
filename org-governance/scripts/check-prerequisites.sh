@@ -24,13 +24,13 @@ for cmd in terraform curl python3; do
   fi
 done
 
-# --- cntlm proxy ---
+# --- px-proxy ---
 echo ""
-echo "-- Proxy (cntlm) --"
-if pgrep -x cntlm &>/dev/null; then
-  pass "cntlm process running"
+echo "-- Proxy (px-proxy) --"
+if pgrep -f "px --proxy" &>/dev/null || pgrep -f "px.pyz" &>/dev/null; then
+  pass "px-proxy process running"
 else
-  fail "cntlm not running — start it before proceeding"
+  fail "px-proxy not running — start it with: px --proxy"
 fi
 
 if curl -sf --max-time 5 -o /dev/null http://127.0.0.1:3128 2>/dev/null || \
@@ -65,7 +65,7 @@ fi
 if curl -sf --max-time 10 -o /dev/null https://api.github.com/zen 2>/dev/null; then
   pass "api.github.com reachable through proxy"
 else
-  fail "api.github.com not reachable — check cntlm and proxy config"
+  fail "api.github.com not reachable — check px-proxy and proxy config"
 fi
 
 # --- GITHUB_TOKEN ---

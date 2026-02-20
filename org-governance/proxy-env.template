@@ -3,9 +3,9 @@
 # Usage: source proxy-env.sh
 #
 # Required when running behind a Kerberos/SPNEGO corporate proxy.
-# cntlm must be running locally to handle Kerberos authentication.
+# px-proxy must be running locally to handle Kerberos authentication.
 
-# --- Proxy (cntlm) ---
+# --- Proxy (px-proxy) ---
 export HTTP_PROXY="http://127.0.0.1:3128"
 export HTTPS_PROXY="http://127.0.0.1:3128"
 export NO_PROXY="localhost,127.0.0.1,169.254.169.254,.internal.example.com"

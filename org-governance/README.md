@@ -9,7 +9,7 @@ Terraform-managed GitHub organization settings, rulesets, teams, and AWS complia
 | Terraform | >= 1.5.0 | IaC for GitHub + AWS providers |
 | curl | yes | API calls through corporate proxy |
 | python3 | yes | JSON parsing (replaces jq in some scripts) |
-| cntlm | yes | Local proxy for Kerberos/SPNEGO auth |
+| px-proxy | yes | Python-based local proxy for Kerberos/SPNEGO auth |
 | klist | recommended | Verify Kerberos ticket validity |
 | aws CLI | for `aws/` module | SCP and Config rule management |
 
@@ -33,33 +33,22 @@ proxy-env.template  # Proxy + credentials template
 
 ## Corporate proxy setup
 
-Terraform's Go HTTP client cannot authenticate directly with Kerberos/SPNEGO proxies. Use **cntlm** as a local intermediary.
+Terraform's Go HTTP client cannot authenticate directly with Kerberos/SPNEGO proxies. Use **px-proxy** (Python-based, no additional software required) as a local intermediary.
 
-### 1. Install and configure cntlm
-
-```bash
-# Install (package manager or from source — no sudo? use a local build)
-# Edit /etc/cntlm.conf or ~/.cntlm.conf:
-Username    your.username
-Domain      CORP.EXAMPLE.COM
-Proxy       corporate-proxy.example.com:8080
-NoProxy     localhost, 127.0.0.1, 169.254.169.254
-Listen      3128
-```
-
-Generate the password hash (avoids storing plaintext):
+### 1. Install and start px-proxy
 
 ```bash
-cntlm -H -d CORP.EXAMPLE.COM -u your.username
-# Paste the output PassNTLMv2 line into your cntlm.conf
+# Install via pip (user-level, no sudo needed)
+pip install --user px-proxy
+
+# Start px-proxy (listens on 127.0.0.1:3128 by default)
+px --proxy &
+
+# Or with explicit corporate proxy:
+px --proxy --server corporate-proxy.example.com:8080 &
 ```
 
-Start cntlm:
-
-```bash
-cntlm -v  # foreground with verbose output for initial testing
-cntlm      # background once working
-```
+px-proxy automatically uses your Kerberos ticket for SPNEGO authentication.
 
 ### 2. Configure environment
 
@@ -77,12 +66,12 @@ source proxy-env.sh
 ./scripts/check-prerequisites.sh
 ```
 
-This checks: tools installed, cntlm running, Kerberos ticket valid, proxy connectivity to `api.github.com`, token authentication, AWS credentials, and Terraform variables.
+This checks: tools installed, px-proxy running, Kerberos ticket valid, proxy connectivity to `api.github.com`, token authentication, AWS credentials, and Terraform variables.
 
 ## Usage
 
 ```bash
-# 1. Ensure cntlm is running and Kerberos ticket is valid
+# 1. Ensure px-proxy is running and Kerberos ticket is valid
 kinit your.username@CORP.EXAMPLE.COM
 
 # 2. Load environment
