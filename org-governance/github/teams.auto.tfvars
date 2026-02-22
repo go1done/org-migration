@@ -1,24 +1,33 @@
 # org-governance/github/teams.auto.tfvars
-# CHANGEME: populate with actual team members
+# group_id: Azure AD Object ID — find at GitHub Org Settings → Authentication security → Identity provider groups
+# group_name: Azure AD group display name
 teams = {
   "aft-platform" = {
     description = "AFT platform team - manages core AFT infrastructure"
-    maintainers = ["CHANGEME"]
-    members     = ["CHANGEME"]
+    idp_group = {
+      group_id   = "CHANGEME"
+      group_name = "CHANGEME"
+    }
   }
   "aft-customizations" = {
     description = "AFT customizations team - manages account customizations"
-    maintainers = ["CHANGEME"]
-    members     = ["CHANGEME"]
+    idp_group = {
+      group_id   = "CHANGEME"
+      group_name = "CHANGEME"
+    }
   }
   "pipeline-admins" = {
     description = "Pipeline administrators - manages CI/CD pipelines"
-    maintainers = ["CHANGEME"]
-    members     = ["CHANGEME"]
+    idp_group = {
+      group_id   = "CHANGEME"
+      group_name = "CHANGEME"
+    }
   }
   "security-reviewers" = {
     description = "Security review team - required CODEOWNERS reviewers"
-    maintainers = ["CHANGEME"]
-    members     = ["CHANGEME"]
+    idp_group = {
+      group_id   = "CHANGEME"
+      group_name = "CHANGEME"
+    }
   }
 }

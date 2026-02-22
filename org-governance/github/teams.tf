@@ -6,6 +6,11 @@ variable "teams" {
     privacy     = optional(string, "closed")
     maintainers = optional(list(string), [])
     members     = optional(list(string), [])
+    idp_group = optional(object({
+      group_id          = string
+      group_name        = string
+      group_description = optional(string, "")
+    }))
   }))
   default = {}
 }
@@ -18,6 +23,17 @@ resource "github_team" "teams" {
   privacy     = each.value.privacy
 }
 
+resource "github_team_sync_group_mapping" "teams" {
+  for_each  = { for k, v in var.teams : k => v if v.idp_group != null }
+  team_slug = github_team.teams[each.key].slug
+
+  group {
+    group_id          = each.value.idp_group.group_id
+    group_name        = each.value.idp_group.group_name
+    group_description = each.value.idp_group.group_description
+  }
+}
+
 resource "github_team_membership" "maintainers" {
   for_each = {
     for pair in flatten([
@@ -28,7 +44,7 @@ resource "github_team_membership" "maintainers" {
           username = user
           role     = "maintainer"
         }
-      ]
+      ] if team.idp_group == null
     ]) : pair.key => pair
   }
 
@@ -47,7 +63,7 @@ resource "github_team_membership" "members" {
           username = user
           role     = "member"
         }
-      ]
+      ] if team.idp_group == null
     ]) : pair.key => pair
   }
 
