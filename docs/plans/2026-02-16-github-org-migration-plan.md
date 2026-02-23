@@ -1,7 +1,5 @@
 # GitHub Org Migration Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Migrate 15+ AFT and pipeline repos from a partially governed GitHub org to a new Enterprise Cloud org with full Terraform-managed policy enforcement.
 
 **Architecture:** Policy-first phased migration (Approach B). Terraform `org-governance` repo establishes org settings, rulesets, teams, and security before any repos are migrated. Repos migrate in dependency-ordered waves with automated mirror + reference update + validation. OPA policies and reusable GitHub Actions workflows enforce compliance post-migration.
