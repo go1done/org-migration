@@ -170,3 +170,26 @@ Applied by the `pipeline-strict` org-level ruleset:
 
 For rules that have no automated enforcement, see the alternatives in
 [`docs/not-terraform-enforceable.md`](not-terraform-enforceable.md).
+
+---
+
+## 10. Why 7 Separate Rulesets
+
+GitHub rulesets are additive — each ruleset has its own **conditions** (which branches and
+which repos it targets) and its own **rules**. You cannot express "apply rule A to `main` but
+rule B to all other branches" in a single ruleset. A separate ruleset is needed whenever the
+branch target, repo target, or rule set differs.
+
+| Ruleset | Why separate |
+|---------|-------------|
+| `baseline` | Targets `~DEFAULT_BRANCH` only — 2 approvals, status checks, no force-push |
+| `lab-branch-protection` | Targets `lab` only — same strictness as main but different branch |
+| `non-default-branch-pr` | Targets everything except main and lab — only 1 approval needed |
+| `branch-naming` | Targets all user branches — different rule type (`branch_name_pattern`), different exclusions |
+| `commit-message-jira` | Targets all branches — different rule type (`commit_message_pattern`) |
+| `aft-strict` | Targets `aft-*` repos only — layered on top of baseline with extra CI checks |
+| `pipeline-strict` | Targets `pipeline-*` repos only — same idea, different required checks |
+
+The alternative would be per-repo branch protection rules, but those require configuring every
+repo individually and do not auto-apply to new repos. Org-level rulesets apply automatically to
+any repo matching the condition, including repos created in the future.
