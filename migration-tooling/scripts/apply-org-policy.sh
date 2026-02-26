@@ -653,7 +653,7 @@ Legend: [GA]=GitHub Actions  [UI]=GitHub UI  [REPO]=per-repo config  [STYLE]=con
 
 ---
 
-## From 'Github Rulesets' image
+## "Github Rulesets"
 
 **[GA] spike/* branches cannot merge anywhere**
 → GitHub Actions: check source branch on pull_request event
@@ -671,7 +671,7 @@ Legend: [GA]=GitHub Actions  [UI]=GitHub UI  [REPO]=per-repo config  [STYLE]=con
 
 ---
 
-## From 'Org settings' image
+## "Org settings"
 
 **[UI] Forks restricted to same org only**
 → GitHub UI: Settings > Member privileges > Forking
@@ -699,7 +699,7 @@ Legend: [GA]=GitHub Actions  [UI]=GitHub UI  [REPO]=per-repo config  [STYLE]=con
 
 ---
 
-## From 'github_action' image
+## "github_action"
 
 **[GA] Repository naming convention (lowercase, hyphens, a-z0-9 only)**
 → GitHub Actions: webhook on repository.created event
@@ -717,7 +717,7 @@ Legend: [GA]=GitHub Actions  [UI]=GitHub UI  [REPO]=per-repo config  [STYLE]=con
 
 ---
 
-## From 'Team standards' image
+## "Team standards"
 
 **[STYLE] Commit messages: imperative mood, ≤100 chars, end with ' -jmp'**
 → commitlint client-side hook (commit-msg) — cannot enforce via org rulesets
