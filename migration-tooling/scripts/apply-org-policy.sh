@@ -226,6 +226,8 @@ print(json.dumps({
     GOT_DELETE=$(echo "$RESULT" | pyjq 'print(d.get("members_can_delete_repositories","not returned"))')
     [ "$GOT_TEAMS" = "not returned" ] && echo "  [WARN] members_can_create_teams not returned — may need GitHub UI: Settings > Member privileges > Team creation"
     [ "$GOT_DELETE" = "not returned" ] && echo "  [WARN] members_can_delete_repositories not returned — may need GitHub UI: Settings > Member privileges > Repository deletion"
+    [ "$GOT_TEAMS" = "True" ] && echo "  [WARN] members_can_create_teams still True — API accepted field but did not change value; set via GitHub UI or Enterprise policy"
+    [ "$GOT_DELETE" = "True" ] && echo "  [WARN] members_can_delete_repositories still True — API accepted field but did not change value; set via GitHub UI or Enterprise policy"
     APPLIED=$((APPLIED + 1))
   else
     MSG=$(echo "$RESULT" | pyjq 'print(d.get("message","Unknown error") if d else "Unknown error")')
@@ -668,6 +670,16 @@ echo "                    Select 'Only within this organization'"
 echo ""
 echo "  [UI] Members cannot change repo visibility"
 echo "       → GitHub UI: Settings > Member privileges > Repository visibility change"
+echo ""
+echo "  [UI] Members cannot create teams (members_can_create_teams)"
+echo "       → GitHub UI: Settings > Member privileges > Team creation"
+echo "                    Uncheck 'Allow members to create teams'"
+echo "       → If greyed out: set at Enterprise Settings > Policies > Teams"
+echo ""
+echo "  [UI] Members cannot delete repositories (members_can_delete_repositories)"
+echo "       → GitHub UI: Settings > Member privileges > Repository deletion and transfer"
+echo "                    Uncheck 'Allow members to delete or transfer repositories'"
+echo "       → If greyed out: set at Enterprise Settings > Policies > Member privileges"
 echo ""
 echo "  [GA] feature/* branches auto-deleted after merge to non-main branch"
 echo "       → GitHub Actions: delete source branch on pull_request closed+merged"
