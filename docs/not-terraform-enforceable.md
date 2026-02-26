@@ -4,6 +4,45 @@ The following rules were specified in the org governance policy images but **can
 through Terraform** (GitHub provider or otherwise). Each item notes the reason and the recommended
 alternative enforcement mechanism.
 
+---
+
+## Why items end up here
+
+**No REST API field at all**
+The GitHub REST API simply has no endpoint or field for the setting. It can only be changed in
+the GitHub UI.
+- Fork restriction (same-org only) — GHEC UI-only setting
+- Members cannot change repo visibility — no API field exists
+- Squash/merge method per source branch — `delete_branch_on_merge` is a single boolean on the
+  repo, not conditional by source branch
+
+**API field exists but Terraform provider does not expose it**
+The GitHub REST API accepts the field (PATCH `/orgs/{org}`), but the `github_organization`
+resource in the Terraform GitHub provider v6 has no corresponding attribute. The script
+`apply-org-policy.sh` sets these directly via `curl` as a workaround. On GHEC they may also be
+locked at the Enterprise policy level, which silently overrides the org-level value.
+- `members_can_create_teams`
+- `members_can_delete_repositories`
+
+**Rulesets API has no source-branch condition**
+Org rulesets can restrict the *target* branch via `ref_name` conditions, but cannot filter by
+the PR's *source* branch. GitHub Actions is the only place to intercept based on source branch.
+- spike/* cannot merge anywhere
+- feature/* cannot merge directly to main
+- Merge method enforcement per source branch type
+
+**Inherently event/time-driven — needs a workflow**
+The desired behaviour is a reaction to an event or the passage of time, which has no equivalent
+in declarative Terraform resources.
+- Branch auto-delete after 90/180 days — needs a scheduled cron workflow
+- Repo naming enforcement — needs to react to the `repository.created` event
+
+**Per-repo file, not an org setting**
+The enforcement lives inside each repository's working tree, not in org-level configuration.
+- CRLF rejection — requires `.gitattributes` in every repo
+
+---
+
 | # | Rule | Reason | Source |
 |---|------|--------|--------|
 | 1 | `spike` branches cannot merge anywhere | GitHub rulesets have no source-branch restriction | `Github Rulesets` |
