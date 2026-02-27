@@ -27,7 +27,7 @@
 #   - Same-org-only fork restriction (GHEC UI only, no API field)
 #   - Members cannot change repo visibility (no API field)
 #   - CRLF rejection (needs .gitattributes per repo)
-#   - Repository naming enforcement (needs GitHub Actions webhook on repo.created)
+#   - Repository naming enforcement (use GHEC org repository policy — public preview)
 #   - README.md requirement (needs Actions check)
 #   - dev/lab branch existence (handled in repos.tf for Terraform-managed repos)
 
@@ -642,88 +642,4 @@ echo "  Skipped: ${SKIPPED}"
 echo "  Failed:  ${FAILED}"
 [ "$DRY_RUN" = "--dry-run" ] && echo "" && echo "  This was a DRY RUN. Remove --dry-run to apply changes."
 echo ""
-GAPS_FILE="org-policy-gaps-${ORG}.md"
-cat > "$GAPS_FILE" << 'GAPS'
-# Org Policy Gaps — Manual Follow-up Required
-
-Rules from policy images NOT applied by apply-org-policy.sh.
-Each item requires a manual step or a separate automation.
-
-Legend: [GA]=GitHub Actions  [UI]=GitHub UI  [REPO]=per-repo config  [STYLE]=convention
-
----
-
-## "Github Rulesets"
-
-**[GA] spike/* branches cannot merge anywhere**
-→ GitHub Actions: check source branch on pull_request event
-  Workflow: org-shared-workflows/spike-merge-block.yml
-
-**[GA] feature/* branches cannot merge directly to main**
-→ GitHub Actions: check source branch when PR targets main
-
-**[GA] release→main PRs must use squash; feature PRs must NOT squash**
-→ GitHub Actions: validate merge method before merge is allowed
-
-**[UI] Merges to main restricted to assigned merging team only**
-→ Add bypass actors to 'baseline' ruleset once team IDs are known:
-  GitHub UI: Rulesets > baseline > Bypass list > add team
-
----
-
-## "Org settings"
-
-**[UI] Forks restricted to same org only**
-→ GitHub UI: Settings > Member privileges > Forking
-           Select 'Only within this organization'
-
-**[UI] Members cannot change repo visibility**
-→ GitHub UI: Settings > Member privileges > Repository visibility change
-
-**[UI] Members cannot create teams (members_can_create_teams)**
-→ GitHub UI: Settings > Member privileges > Team creation
-           Uncheck 'Allow members to create teams'
-→ If greyed out: set at Enterprise Settings > Policies > Teams
-
-**[UI] Members cannot delete repositories (members_can_delete_repositories)**
-→ GitHub UI: Settings > Member privileges > Repository deletion and transfer
-           Uncheck 'Allow members to delete or transfer repositories'
-→ If greyed out: set at Enterprise Settings > Policies > Member privileges
-
-**[GA] feature/* branches auto-deleted after merge to non-main branch**
-→ GitHub Actions: delete source branch on pull_request closed+merged
-  (Cannot be set per merge-target — delete_branch_on_merge is binary per repo)
-
-**[GA] Stale branches auto-deleted after 90/180 days**
-→ Scheduled GitHub Actions workflow (cron) on stale-branch cleanup
-
----
-
-## "github_action"
-
-**[GA] Repository naming convention (lowercase, hyphens, a-z0-9 only)**
-→ GitHub Actions: webhook on repository.created event
-
-**[GA] Every repo must have a README.md**
-→ Extend org-shared-workflows/repo-compliance-check.yml
-
-**[GA] Every repo must have dev and lab branches**
-→ For Terraform-managed repos: add github_branch resources in repos.tf
-→ For portal-created repos: add to repo-setup automation
-
-**[REPO] Unix line endings only (CRLF rejected)**
-→ Add .gitattributes to every repo template:
-  * text=auto eol=lf
-
----
-
-## "Team standards"
-
-**[STYLE] Commit messages: imperative mood, ≤100 chars, end with ' -jmp'**
-→ commitlint client-side hook (commit-msg) — cannot enforce via org rulesets
-
----
-
-See docs/not-terraform-enforceable.md for full list and implementation notes.
-GAPS
-echo "  Gap memo saved to: ${GAPS_FILE}"
+echo "  Gap memo: docs/org-policy-gaps.md"
