@@ -2,6 +2,8 @@
 name: Repository Compliance Check
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_call:
 
 jobs:
@@ -12,6 +14,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check README.md exists
+        run: |
+          if [ ! -f "README.md" ] && [ ! -f "readme.md" ]; then
+            echo "::error::README.md is missing. Every repository must have a README."
+            exit 1
+          fi
 
       - name: Check CODEOWNERS exists
         run: |

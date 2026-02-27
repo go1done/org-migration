@@ -1,0 +1,68 @@
+# org-shared-workflows/.github/workflows/merge-method-audit.yml
+# Post-merge audit: checks that the merge method matches the source branch type.
+#   - release/* → main  must use squash merge   (1 parent commit)
+#   - feature/* → *     must NOT use squash      (2 parent commits)
+#
+# CANNOT block merge — merge method is chosen at click-time after all status
+# checks pass. This workflow files a compliance issue after the fact.
+#
+# Not registered as a required workflow — runs on pull_request closed event only.
+name: Merge Method Audit
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_call:
+
+jobs:
+  audit-merge-method:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Audit merge method vs branch type
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE:   ${{ github.event.pull_request.head.ref }}
+          TARGET:   ${{ github.event.pull_request.base.ref }}
+          SHA:      ${{ github.sha }}
+          REPO:     ${{ github.repository }}
+          PR_URL:   ${{ github.event.pull_request.html_url }}
+          PR_NUM:   ${{ github.event.pull_request.number }}
+        run: |
+          # Count parent commits to determine merge method
+          # squash merge  = 1 parent (single new commit on target)
+          # merge commit  = 2 parents (explicit merge commit)
+          # rebase merge  = 1 parent per commit (indistinguishable from squash at HEAD)
+          PARENTS=$(git cat-file -p "$SHA" | grep -c '^parent ')
+
+          VIOLATION=""
+
+          if [[ "$SOURCE" == release/* && "$TARGET" == "main" && "$PARENTS" -ne 1 ]]; then
+            VIOLATION="release→main must use squash merge (got merge commit with $PARENTS parents)"
+          fi
+
+          if [[ "$SOURCE" == feature/* && "$PARENTS" -eq 1 ]]; then
+            VIOLATION="feature/* must use merge commit, not squash (got $PARENTS parent)"
+          fi
+
+          if [ -z "$VIOLATION" ]; then
+            echo "Merge method is compliant."
+            exit 0
+          fi
+
+          echo "::warning::Merge method violation: $VIOLATION"
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "Merge method violation on PR #${PR_NUM}: ${SOURCE} → ${TARGET}" \
+            --body "$(printf '**Rule:** %s\n**PR:** %s\n**Branch:** `%s` → `%s`\n\nThis is a post-merge audit — the merge has already occurred and cannot be reverted automatically.' \
+              "$VIOLATION" "$PR_URL" "$SOURCE" "$TARGET")" \
+            --label compliance

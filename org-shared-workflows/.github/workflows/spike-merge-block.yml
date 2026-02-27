@@ -1,0 +1,27 @@
+# org-shared-workflows/.github/workflows/spike-merge-block.yml
+# Blocks spike/* branches from merging into any branch.
+# Registered as an org-level required workflow via:
+#   Org Settings → Rules → Rulesets → "Require workflows to pass before merging"
+name: Spike Branch Merge Block
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+
+jobs:
+  block-spike-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Block spike/* from merging
+        env:
+          HEAD: ${{ github.head_ref }}
+        run: |
+          if [[ "$HEAD" == spike/* ]]; then
+            echo "::error::spike/* branches cannot be merged into any branch."
+            echo "::error::Spike branches are throwaway experiments. Close this PR and delete the branch."
+            exit 1
+          fi

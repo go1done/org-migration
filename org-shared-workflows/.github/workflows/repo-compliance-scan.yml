@@ -1,0 +1,77 @@
+# org-shared-workflows/.github/workflows/repo-compliance-scan.yml
+# Weekly scan of all org repos for compliance gaps that cannot be enforced
+# as required status checks:
+#   - Missing dev branch
+#   - Missing lab branch
+#
+# Files a GitHub issue in org-governance for each violation found.
+# Deduplicates: skips creating an issue if one with the same title is already open.
+#
+# Runs in the org-shared-workflows repo context.
+# Requires:
+#   - ORG_ADMIN_TOKEN secret: PAT or app token with repo + issues scope across the org
+#   - ORG_NAME variable: the GitHub org name
+#   - GOVERNANCE_REPO variable: repo to file issues in (default: org-governance)
+name: Repository Compliance Scan
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # Weekly, Monday 07:00 UTC (1h after stale-branch-cleanup)
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Scan for missing dev and lab branches
+        env:
+          GH_TOKEN:        ${{ secrets.ORG_ADMIN_TOKEN }}
+          ORG:             ${{ vars.ORG_NAME }}
+          GOVERNANCE_REPO: ${{ vars.GOVERNANCE_REPO || 'org-governance' }}
+        run: |
+          VIOLATIONS=0
+          ISSUES_CREATED=0
+
+          echo "=== Repository Compliance Scan — $(date -u +%Y-%m-%d) ==="
+          echo ""
+
+          gh api --paginate "orgs/$ORG/repos" --jq '.[].name' | while read -r repo; do
+            for branch in dev lab; do
+              STATUS=$(gh api "repos/$ORG/$repo/branches/$branch" \
+                --silent -i 2>&1 | grep -o 'HTTP/[^ ]* [0-9]*' | awk '{print $NF}' | tail -1)
+
+              if [ "$STATUS" = "404" ]; then
+                VIOLATIONS=$((VIOLATIONS + 1))
+                TITLE="Missing $branch branch: $repo"
+                echo "MISSING: $ORG/$repo — branch '$branch'"
+
+                # Check for existing open issue to avoid duplicates
+                EXISTING=$(gh issue list \
+                  --repo "$ORG/$GOVERNANCE_REPO" \
+                  --state open \
+                  --search "\"$TITLE\"" \
+                  --json number \
+                  --jq 'length')
+
+                if [ "$EXISTING" -gt 0 ]; then
+                  echo "  [SKIP] Issue already open for $repo/$branch"
+                  continue
+                fi
+
+                gh issue create \
+                  --repo "$ORG/$GOVERNANCE_REPO" \
+                  --title "$TITLE" \
+                  --body "$(printf 'Repository \`%s\` is missing the required \`%s\` branch.\n\nCreate it:\n```\ngh api -X POST repos/%s/%s/git/refs \\\n  -f ref="refs/heads/%s" \\\n  -f sha="$(gh api repos/%s/%s/commits/main --jq .sha)"\n```' \
+                    "$repo" "$branch" "$ORG" "$repo" "$branch" "$ORG" "$repo")" \
+                  --label compliance \
+                  && ISSUES_CREATED=$((ISSUES_CREATED + 1)) \
+                  || echo "  [WARN] Could not create issue"
+              fi
+            done
+          done
+
+          echo ""
+          echo "Done. Violations: $VIOLATIONS  Issues created: $ISSUES_CREATED"

@@ -1,0 +1,69 @@
+# org-shared-workflows/.github/workflows/stale-branch-cleanup.yml
+# Deletes stale branches across all org repos on a weekly schedule.
+# Thresholds:
+#   feature/* and release/*  → 90 days since last commit
+#   all other branches        → 180 days since last commit
+# Exempt: main, dev, lab (never deleted by this workflow)
+#
+# Runs in the org-shared-workflows repo context.
+# Requires:
+#   - ORG_ADMIN_TOKEN secret: PAT or app token with repo scope across the org
+#   - ORG_NAME variable: the GitHub org name
+name: Stale Branch Cleanup
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Delete stale branches across org
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ORG:      ${{ vars.ORG_NAME }}
+        run: |
+          FEATURE_RELEASE_DAYS=90
+          OTHER_DAYS=180
+          NOW=$(date +%s)
+          DELETED=0
+          SKIPPED=0
+
+          echo "=== Stale Branch Cleanup — $(date -u +%Y-%m-%d) ==="
+          echo "Thresholds: feature/release → ${FEATURE_RELEASE_DAYS}d, others → ${OTHER_DAYS}d"
+          echo ""
+
+          gh api --paginate "orgs/$ORG/repos" --jq '.[].name' | while read -r repo; do
+            gh api --paginate "repos/$ORG/$repo/branches" \
+              --jq '.[].name' 2>/dev/null | while read -r branch; do
+
+              # Never touch protected branches
+              [[ "$branch" =~ ^(main|dev|lab)$ ]] && continue
+
+              LAST=$(gh api "repos/$ORG/$repo/branches/$branch" \
+                --jq '.commit.commit.author.date' 2>/dev/null) || continue
+
+              AGE=$(( ( NOW - $(date -d "$LAST" +%s) ) / 86400 ))
+
+              THRESHOLD=$OTHER_DAYS
+              [[ "$branch" == feature/* || "$branch" == release/* ]] \
+                && THRESHOLD=$FEATURE_RELEASE_DAYS
+
+              if (( AGE > THRESHOLD )); then
+                echo "Deleting $ORG/$repo:$branch (${AGE}d old, threshold ${THRESHOLD}d)"
+                gh api -X DELETE "repos/$ORG/$repo/git/refs/heads/$branch" \
+                  && DELETED=$((DELETED + 1)) \
+                  || echo "  [WARN] Could not delete — may be protected or already gone"
+              else
+                SKIPPED=$((SKIPPED + 1))
+              fi
+            done
+          done
+
+          echo ""
+          echo "Done. Deleted: $DELETED  Skipped (not stale): $SKIPPED"

@@ -93,8 +93,8 @@ All user-created branches (except `main`, `dev`, `lab`) must follow this pattern
 | CODEOWNERS review is triggered for PRs on associated content | Ruleset: `baseline` (`require_code_owner_review = true`) |
 | PRs from `spike/*` branches must be rejected from any target | GitHub Actions: reject PR if source is `spike/*` |
 | PRs from `feature/*` into `main` must be rejected | GitHub Actions: reject PR if source is `feature/*` and target is `main` |
-| PRs from `release/*` into `main` must be made as squash commits | GitHub Actions: validate merge method before merge |
-| PRs from `feature/*` must NOT use squash commits | GitHub Actions: validate merge method before merge |
+| PRs from `release/*` into `main` must be made as squash commits | GitHub Actions: post-merge audit only (`merge-method-audit.yml`) — merge method is chosen at click-time after all status checks pass; pre-merge blocking is not possible |
+| PRs from `feature/*` must NOT use squash commits | GitHub Actions: post-merge audit only (`merge-method-audit.yml`) — same limitation as above |
 | PRs must include the Jira issue key in the title/description | Convention (Team standards); partially enforced via commit message ruleset |
 | PRs should have descriptive titles addressing what changes are being made | Convention |
 | PRs should include multiple bullet points when more than one change is being made | Convention |

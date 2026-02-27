@@ -1,0 +1,58 @@
+# org-shared-workflows/.github/workflows/branch-merge-policy.yml
+# Two enforcements in one workflow:
+#   1. block-feature-to-main: fails if a feature/* PR targets main (pre-merge block)
+#   2. delete-feature-branch: deletes the source branch after a feature/* PR merges
+#      to any target other than main (delete_branch_on_merge in repos.tf covers
+#      Terraform-managed repos; this covers repos created outside Terraform)
+#
+# Registered as an org-level required workflow via:
+#   Org Settings → Rules → Rulesets → "Require workflows to pass before merging"
+name: Branch Merge Policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  workflow_call:
+
+jobs:
+  block-feature-to-main:
+    # Skip on closed events — check only applies to open/updated PRs
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Block feature/* → main
+        env:
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [[ "$HEAD" == feature/* && "$BASE" == "main" ]]; then
+            echo "::error::feature/* branches cannot merge directly to main."
+            echo "::error::Required merge path: feature/* → dev → (release/*) → main"
+            exit 1
+          fi
+
+  delete-feature-branch:
+    # Runs only after a feature/* PR merges into a non-main branch
+    if: |
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'feature/') &&
+      github.event.pull_request.base.ref != 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Delete merged feature branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          REPO:   ${{ github.repository }}
+        run: |
+          echo "Deleting branch: $BRANCH"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" \
+            && echo "Deleted." \
+            || echo "::warning::Could not delete $BRANCH — may already be deleted or protected."
